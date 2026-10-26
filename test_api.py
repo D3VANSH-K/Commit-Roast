@@ -15,6 +15,7 @@ def client(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     server._hits.clear()
     server._cache.clear()
+    core._cooldown.clear()
     return TestClient(server.app)
 
 
@@ -51,7 +52,7 @@ def fake_gemini(monkeypatch, calls):
         def generate_content(self, model, contents, config):
             calls.append(model)
             return type("R", (), {"text": GOOD})()
-    monkeypatch.setattr(core.genai, "Client", lambda api_key: type("C", (), {"models": Models()})())
+    monkeypatch.setattr(core.genai, "Client", lambda api_key, http_options=None: type("C", (), {"models": Models()})())
 
 
 def test_real_review_with_server_key_counts_down_and_caches(client, monkeypatch):
@@ -79,3 +80,21 @@ def test_visitor_key_skips_the_limit(client, monkeypatch):
     monkeypatch.setattr(server, "ROASTS_PER_HOUR", 0)
     r = client.post("/api/roast", json={"diff": "+x", "persona": "staff", "api_key": "my-own-key"})
     assert r.status_code == 200
+
+
+def test_preferred_model_is_used(client, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "server-key")
+    calls = []
+    fake_gemini(monkeypatch, calls)
+    r = client.post("/api/roast", json={"diff": "+x", "persona": "staff", "model": "gemini-3.8-flash"})
+    assert r.status_code == 200 and r.json()["model"] == "gemini-3.8-flash" and calls == ["gemini-3.8-flash"]
+
+
+def test_bad_model_name_is_rejected(client):
+    r = client.post("/api/roast", json={"diff": "+x", "persona": "staff", "model": "rm -rf /"})
+    assert r.status_code == 422
+
+
+def test_model_tools_need_a_key(client):
+    assert client.get("/api/models").status_code == 400
+    assert client.get("/api/test?model=gemini-3.5-flash-lite").status_code == 400

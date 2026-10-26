@@ -25,7 +25,7 @@ It comes as a **website** and as a **terminal tool** you run inside any git proj
 | The brain: form, prompt, AI call | Google Gemini + Pydantic | `core.py` |
 | Examples + offline demo reviews | Python | `samples.py` |
 | Terminal version | Rich | `cli.py` |
-| Automated tests (19) | pytest | `test_core.py`, `test_api.py` |
+| Automated tests (26) | pytest | `test_core.py`, `test_api.py` |
 
 The key idea is **structured output**: Gemini is not allowed to reply with free text. It must fill in a fixed form (the `ReviewReport` schema in `core.py`), and Pydantic checks every field before anything reaches the screen.
 
@@ -61,7 +61,7 @@ python path/to/commit-roast/cli.py --commit    # review, then offer to commit
 
 ```bash
 pip install pytest httpx
-python -m pytest            # 19 passed
+python -m pytest            # 26 passed
 ```
 
 ## Put it online for free (Vercel)
@@ -79,4 +79,11 @@ Vercel finds `app.py` on its own and serves the `static/` folder from its CDN. E
 - Visitors get 20 roasts an hour on the site's key; they can add their own key in Settings.
 - The diff is treated as data, so "ignore your instructions" hidden in code doesn't work.
 - AI text is escaped before it is shown on the page.
-- If one Gemini model is retired, busy or out of quota, the next one is tried automatically.
+- If one Gemini model is slow, retired, busy or out of quota, the next one is tried automatically, and the failing one is skipped for a while.
+- Each call is capped at 20 seconds and a whole roast at 45, so it always finishes inside Vercel's 60-second limit.
+
+## Which AI model?
+
+Automatic order: `gemini-3.5-flash-lite` (fastest, most free requests) → `gemini-3.6-flash` → `gemini-3.8-flash` → `gemini-3.1-flash-lite`.
+Each verdict shows the model used and how long it took. In the app's **Settings** you can list every model your key can use, speed-test each one, and pick one.
+To change the default for everyone, set the `GEMINI_MODEL` environment variable (e.g. `gemini-3.8-flash` for sharper but slower roasts).

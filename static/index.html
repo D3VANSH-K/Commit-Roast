@@ -84,6 +84,14 @@
         <span>Remember it on this device</span>
       </label>
       <p class="fine">Get a free key at <a href="https://aistudio.google.com" target="_blank" rel="noopener">aistudio.google.com</a>. Your key goes straight to Google through this site and is never saved on our server.</p>
+
+      <div class="models-head">
+        <h3>AI model</h3>
+        <button class="text-btn" id="refreshModels" type="button">Check what my key can use</button>
+      </div>
+      <div class="models" id="models" role="radiogroup" aria-label="AI model"></div>
+      <p class="fine" id="modelsNote">Automatic tries the fastest model first and switches if one is busy or out of quota. Flash-Lite is fastest and has the most free requests; Flash writes sharper roasts but the free tier allows only a few a day.</p>
+
       <button class="roast-btn small" value="close">Done</button>
     </form>
   </dialog>

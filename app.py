@@ -28,7 +28,8 @@ REQUIRED_FILES = ["core.py", "samples.py", "static/index.html", "static/style.cs
 
 # If a file is missing from the upload, don't crash: remember why, and explain it on the page instead.
 try:
-    from core import MAX_DIFF_CHARS, PERSONAS, CommitRoastError, analyze_diff, find_persona
+    from core import (DEFAULT_MODELS, MAX_DIFF_CHARS, PERSONAS, CommitRoastError, analyze_diff,
+                      find_persona, list_models, ping_model)
     from samples import SAMPLES, demo_report, match_sample
     STARTUP_ERROR = None
 except Exception as e:  # e.g. core.py or samples.py not uploaded, or a library missing
@@ -55,6 +56,7 @@ class RoastRequest(BaseModel):
     diff: str = Field(min_length=1, max_length=200_000)
     persona: str = "staff"
     api_key: Optional[str] = Field(default=None, max_length=200)  # optional: visitor's own key
+    model: Optional[str] = Field(default=None, max_length=60, pattern=r"^gemini-[a-z0-9.\-]+$")  # optional: preferred model
 
 
 class RoastResponse(BaseModel):
@@ -114,6 +116,8 @@ def config(request: Request):
         "server_key": bool(server_key()),
         "roasts_left": roasts_left(visitor_ip(request)),
         "max_diff_chars": MAX_DIFF_CHARS,
+        "models": DEFAULT_MODELS,
+        "default_model": os.environ.get("GEMINI_MODEL") or DEFAULT_MODELS[0],
         "personas": personas,
         "samples": samples,
     }
@@ -135,7 +139,7 @@ def roast(body: RoastRequest, request: Request, response: Response):
         return RoastResponse(report=demo_report(sample, persona).model_dump(), persona=persona,
                              model="demo", truncated=False, demo=True)
 
-    cache_key = (hashlib.sha256(diff.encode()).hexdigest(), persona)
+    cache_key = (hashlib.sha256(diff.encode()).hexdigest(), persona, body.model or "")
     hit = _cache.get(cache_key)
     if hit and time.time() - hit[0] < CACHE_SECONDS:
         return hit[1]
@@ -147,7 +151,7 @@ def roast(body: RoastRequest, request: Request, response: Response):
             raise HTTPException(429, "You've used this hour's free roasts. Add your own free Gemini key in Settings to keep going.")
 
     try:
-        result = analyze_diff(diff, persona, api_key=key)
+        result = analyze_diff(diff, persona, api_key=key, preferred_model=body.model)
     except CommitRoastError as e:
         raise HTTPException(502, str(e))
 
@@ -159,6 +163,39 @@ def roast(body: RoastRequest, request: Request, response: Response):
                         model=result.model, truncated=result.truncated, demo=False)
     _cache[cache_key] = (time.time(), out)
     return out
+
+
+def key_for(request: Request) -> str:
+    """A visitor's own key (sent in a header by the Settings panel), else the site's key."""
+    return (request.headers.get("x-gemini-key") or "").strip()[:200] or server_key()
+
+
+@app.get("/api/models")
+def models(request: Request):
+    """Which Gemini models this key can use. Shown in Settings."""
+    check_startup()
+    if not key_for(request):
+        raise HTTPException(400, "No Gemini API key is set up yet.")
+    try:
+        return {"models": list_models(key_for(request))}
+    except CommitRoastError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/test")
+def test_model(request: Request, model: str):
+    """Times one tiny request to a model. Shown in Settings as a speed test."""
+    check_startup()
+    if not key_for(request):
+        raise HTTPException(400, "No Gemini API key is set up yet.")
+    if not model.startswith("gemini-") or len(model) > 60:
+        raise HTTPException(400, "That isn't a Gemini model name.")
+    ip = visitor_ip(request)
+    if not request.headers.get("x-gemini-key"):
+        if roasts_left(ip) == 0:
+            raise HTTPException(429, "You've used this hour's free requests. Add your own key to keep testing.")
+        _hits[ip].append(time.time())  # a speed test costs the same as a roast
+    return ping_model(model, key_for(request))
 
 
 # ---------- the website itself (must come AFTER the API routes) ----------

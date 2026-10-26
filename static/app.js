@@ -13,6 +13,7 @@ const state = {
   config: null, persona: "staff", busy: false, last: null,
   view: "idle",            // idle | thinking | result | error
   loadingTimer: null, reactTimer: null, pokeCount: 0,
+  model: "",               // "" = automatic; otherwise the model chosen in Settings
 };
 
 const els = {
@@ -21,6 +22,7 @@ const els = {
   roast: $("#roastBtn"), roastLabel: $("#roastLabel"), verdict: $("#verdict"),
   settingsBtn: $("#settingsBtn"), settings: $("#settings"), keyDot: $("#keyDot"), keyStatus: $("#keyStatus"),
   ownKey: $("#ownKey"), remember: $("#rememberKey"), toast: $("#toast"), kbd: $("#kbdHint"),
+  models: $("#models"), refreshModels: $("#refreshModels"),
 };
 
 /* ---------- small helpers ---------- */
@@ -308,19 +310,27 @@ function showThinking() {
     if (!line || state.view !== "thinking") return clearInterval(state.loadingTimer);
     i = (i + 1) % p.loading.length;
     restart(line, "swap");
-    line.firstElementChild.textContent = p.loading[i];
+    const secs = (Date.now() - state.started) / 1000;
+    line.firstElementChild.textContent = secs > 12 ? "Still thinking. This model is being slow…" : p.loading[i];
   }, 1500);
 }
 
 function showError(title, message, withSettings) {
   state.view = "error";
+  let [main, details] = message.split(" Details: ");
+  main = main.replace(/^No Gemini model could answer\.\s*/, ""); // the title already says it
   els.verdict.innerHTML = `
     <div class="oops">
       ${faceOf(state.persona, { size: 120, mood: "grimace" })}
       <h3>${esc(title)}</h3>
-      <p>${esc(message)}</p>
-      ${withSettings ? `<button class="chip" id="errSettings" type="button">${icon("sliders", 17)}Open settings</button>` : ""}
+      <p>${esc(main)}</p>
+      ${details ? `<details><summary>What each model said</summary><p>${esc(details)}</p></details>` : ""}
+      <div class="row">
+        <button class="chip" id="errRetry" type="button">${icon("shuffle", 17)}Try again</button>
+        ${withSettings ? `<button class="chip" id="errSettings" type="button">${icon("sliders", 17)}Open settings</button>` : ""}
+      </div>
     </div>`;
+  $("#errRetry").addEventListener("click", roast);
   if (withSettings) $("#errSettings").addEventListener("click", openSettings);
 }
 
@@ -344,7 +354,7 @@ async function showResult(res) {
       <div class="r-head">
         ${face(p.id, p.color, { size: 72, mood: "talk" })}
         <div>
-          <small>Reviewed by${res.demo ? `<span class="badge">Demo</span>` : ""}</small>
+          <small>Reviewed by${res.demo ? `<span class="badge">Demo</span>` : `<span class="model-tag" title="AI model used, and how long it took">${esc(res.model)} · ${res.seconds}s</span>`}</small>
           <strong><span class="full-name">${esc(p.name)}</span><span class="short-name">${esc(p.short)}</span></strong>
         </div>
       </div>
@@ -455,21 +465,26 @@ async function roast() {
   showThinking();
   if (matchMedia("(max-width: 980px), (max-height: 640px)").matches) els.verdict.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
 
-  const started = Date.now();
+  const started = state.started = Date.now();
   try {
     const resp = await fetch("/api/roast", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ diff, persona: state.persona, api_key: ownKey() || null }),
+      body: JSON.stringify({ diff, persona: state.persona, api_key: ownKey() || null, model: state.model || null }),
     });
     const data = await resp.json().catch(() => ({}));
     await wait(Math.max(0, 1100 - (Date.now() - started))); // let the reviewer "think" for a beat, even on instant demo answers
+    data.seconds = ((Date.now() - started) / 1000).toFixed(1);
 
     if (!resp.ok) {
-      const msg = typeof data.detail === "string" ? data.detail : "The server couldn't review that. Try again in a moment.";
-      const needsKey = resp.status === 400 || resp.status === 429 || /key/i.test(msg);
-      showError(resp.status === 429 ? "Out of free roasts" : needsKey ? "This one needs a key" : "That didn't work", msg, needsKey);
-      return;
+      const detail = typeof data.detail === "string" ? data.detail : "";
+      if (resp.status === 504 || (!detail && resp.status >= 500)) {
+        // Vercel stopped the server before it answered (it allows 60 seconds)
+        return showError("The AI took too long", "The server ran out of time waiting for Gemini. Try again, or pick a Flash-Lite model in Settings: it's the fastest.", true);
+      }
+      if (resp.status === 429) return showError("Out of free roasts", detail, true);
+      if (resp.status === 400) return showError("This one needs a key", detail, true);
+      return showError("No model could answer", detail || `The server answered with error ${resp.status}.`, true);
     }
     const left = resp.headers.get("X-Roasts-Left");
     if (left !== null) state.config.roasts_left = Number(left);
@@ -527,7 +542,72 @@ function renderKeyStatus() {
   els.keyStatus.innerHTML = html;
 }
 
-function openSettings() { renderKeyStatus(); els.settings.showModal(); }
+function renderModels(list) {
+  // list: [{id, name, cooling, ok, seconds, error}] ; "" = automatic
+  if (state.model && !list.some((m) => m.id === state.model)) list = [...list, { id: state.model }];
+  const rows = [{ id: "", auto: true }, ...list];
+  els.models.innerHTML = rows.map((m) => {
+    const checked = (m.id || "") === state.model;
+    let sub = m.auto ? "Fastest first, switches if one fails" : m.cooling ? `Skipped for now: ${esc(m.cooling)}` : "";
+    let cls = m.cooling ? "bad" : "";
+    if (m.tested) { sub = m.ok ? `Answered in ${m.seconds}s` : `Failed: ${esc(m.error || "no answer")}`; cls = m.ok ? "good" : "bad"; }
+    return `<label class="model ${m.auto ? "auto" : ""}">
+      <input type="radio" name="model" value="${esc(m.id || "")}" ${checked ? "checked" : ""}>
+      <span class="m-name">${m.auto ? "<b>Automatic</b>" : esc(m.id)}<span class="m-sub ${cls}">${sub}</span></span>
+      ${m.auto ? "" : `<button class="chip" type="button" data-test="${esc(m.id)}">Test speed</button>`}
+    </label>`;
+  }).join("");
+  state.modelList = list;
+}
+
+async function loadModels() {
+  const fallback = state.config.models.map((id) => ({ id }));
+  if (!state.config.server_key && !ownKey()) { renderModels(fallback); return; }
+  els.refreshModels.textContent = "Checking...";
+  try {
+    const resp = await fetch("/api/models", { headers: ownKey() ? { "X-Gemini-Key": ownKey() } : {} });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || resp.status);
+    renderModels(data.models.slice(0, 10));
+    toast(`Your key can use ${data.models.length} models`);
+  } catch (e) {
+    renderModels(fallback);
+    toast(`Couldn't check models: ${e.message}`);
+  } finally {
+    els.refreshModels.textContent = "Check what my key can use";
+  }
+}
+
+els.models.addEventListener("change", (e) => {
+  state.model = e.target.value;
+  store.set("cr-model", state.model || null);
+  toast(state.model ? `Using ${state.model}` : "Automatic model choice");
+});
+els.models.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-test]");
+  if (!b) return;
+  e.preventDefault();
+  const id = b.dataset.test;
+  b.textContent = "Testing...";
+  b.disabled = true;
+  try {
+    const resp = await fetch(`/api/test?model=${encodeURIComponent(id)}`, { headers: ownKey() ? { "X-Gemini-Key": ownKey() } : {} });
+    const r = await resp.json();
+    const res = resp.ok ? r : { ok: false, error: r.detail || `error ${resp.status}` };
+    const list = (state.modelList || []).map((m) => (m.id === id ? { ...m, tested: true, ...res } : m));
+    renderModels(list);
+  } catch {
+    b.textContent = "Test speed"; b.disabled = false;
+    toast("Couldn't reach the server");
+  }
+});
+els.refreshModels.addEventListener("click", loadModels);
+
+function openSettings() {
+  renderKeyStatus();
+  if (!state.modelList) renderModels(state.config.models.map((id) => ({ id })));
+  els.settings.showModal();
+}
 els.settingsBtn.addEventListener("click", openSettings);
 els.ownKey.addEventListener("input", () => { renderKeyStatus(); if (els.remember.checked) store.set("cr-key", ownKey() || null); });
 els.remember.addEventListener("change", () => store.set("cr-key", els.remember.checked ? ownKey() || null : null));
@@ -546,6 +626,7 @@ els.settings.addEventListener("click", (e) => { if (e.target === els.settings) e
   } catch {
     return showError("Can't reach the server", "Start it with: python app.py", false);
   }
+  state.model = store.get("cr-model") || "";
   const savedPersona = store.get("cr-persona");
   if (savedPersona && state.config.personas.some((p) => p.id === savedPersona)) state.persona = savedPersona;
   buildSamples();

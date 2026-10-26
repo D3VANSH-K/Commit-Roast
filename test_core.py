@@ -49,6 +49,13 @@ import json
 from google.genai import errors
 import core
 
+
+@pytest.fixture(autouse=True)
+def fresh_cooldowns():
+    core._cooldown.clear()
+    yield
+    core._cooldown.clear()
+
 GOOD = json.dumps(dict(roast="r", summary="s", risk_score=7, concerns=["c"], conventional_commit="fix: x"))
 
 
@@ -66,7 +73,7 @@ class FakeModels:
 
 def fake_client(monkeypatch, behaviour):
     models = FakeModels(behaviour)
-    monkeypatch.setattr(core.genai, "Client", lambda api_key: type("C", (), {"models": models})())
+    monkeypatch.setattr(core.genai, "Client", lambda api_key, http_options=None: type("C", (), {"models": models})())
     return models
 
 
@@ -108,3 +115,36 @@ def test_find_persona_accepts_ids_and_names():
     assert core.find_persona("pirate") == "pirate"
     assert core.find_persona("Angry Chef") == "chef"
     assert core.find_persona("nonsense") == core.DEFAULT_PERSONA
+
+
+def test_failed_model_is_skipped_next_time(monkeypatch):
+    first = core.DEFAULT_MODELS[0]
+    m = fake_client(monkeypatch, lambda model, cfg: err(429) if model == first else GOOD)
+    core.analyze_diff("+x", "p", api_key="k")
+    m.calls.clear()
+    core.analyze_diff("+y", "p", api_key="k")
+    assert m.calls[0][0] != first  # went straight to a working model
+
+
+class SlowError(Exception):
+    pass
+SlowError.__name__ = "ReadTimeout"
+
+
+def test_timeout_moves_to_next_model(monkeypatch):
+    first = core.DEFAULT_MODELS[0]
+    fake_client(monkeypatch, lambda model, cfg: SlowError("timed out") if model == first else GOOD)
+    res = core.analyze_diff("+x", "p", api_key="k")
+    assert res.model != first and core.cooling(first)
+
+
+def test_gives_up_before_the_time_budget(monkeypatch):
+    monkeypatch.setattr(core, "TOTAL_BUDGET_S", 0)
+    fake_client(monkeypatch, lambda model, cfg: GOOD)
+    with pytest.raises(core.CommitRoastError, match="out of time"):
+        core.analyze_diff("+x", "p", api_key="k")
+
+
+def test_preferred_model_goes_first():
+    assert core.model_order("gemini-3.8-flash")[0] == "gemini-3.8-flash"
+    assert core.DEFAULT_MODELS[0] == "gemini-3.5-flash-lite"
