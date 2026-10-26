@@ -1,19 +1,24 @@
 /* =========================================================
    CommitRoast: what the page does
    1. Loads reviewers + examples from the server (/api/config)
-   2. Highlights the diff as you type and counts the changes
+   2. Highlights the diff as you type, and the reviewer reacts live
    3. Sends the diff to /api/roast and plays the verdict
-   The characters, flame and icons come from art.js.
+   The characters, flame and icons are drawn in art.js.
    ========================================================= */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-const state = { config: null, persona: "staff", busy: false, last: null, loadingTimer: null };
+const state = {
+  config: null, persona: "staff", busy: false, last: null,
+  view: "idle",            // idle | thinking | result | error
+  loadingTimer: null, reactTimer: null, pokeCount: 0,
+};
 
 const els = {
   diff: $("#diff"), hl: $("#hl"), editor: $("#editor"), stats: $("#stats"), clear: $("#clearBtn"),
-  samples: $("#samples"), personas: $("#personas"), parade: $("#parade"), roast: $("#roastBtn"), verdict: $("#verdict"),
+  samples: $("#samples"), reviewers: $("#reviewers"), caption: $("#rvCaption"),
+  roast: $("#roastBtn"), roastLabel: $("#roastLabel"), verdict: $("#verdict"),
   settingsBtn: $("#settingsBtn"), settings: $("#settings"), keyDot: $("#keyDot"), keyStatus: $("#keyStatus"),
   ownKey: $("#ownKey"), remember: $("#rememberKey"), toast: $("#toast"), kbd: $("#kbdHint"),
 };
@@ -23,6 +28,8 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const persona = (id = state.persona) => state.config.personas.find((p) => p.id === id);
 const wait = (ms) => new Promise((r) => setTimeout(r, reduceMotion ? 0 : ms));
 const faceOf = (id, opts) => (state.config ? face(id, persona(id).color, opts) : "");
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+const restart = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
 
 function toast(msg) {
   els.toast.textContent = msg;
@@ -36,17 +43,15 @@ const store = {
   set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
 };
 
-/* ---------- eyes that follow the cursor ---------- */
-let pointer = null, lookQueued = false;
-function updateLooks() {
-  lookQueued = false;
-  if (!pointer) return;
+/* ---------- eyes: follow the cursor, wander when you stop ---------- */
+let pointer = null, lookQueued = false, lastMove = 0;
+function lookAt(target) {
   for (const svg of $$(".face.track")) {
     const look = svg.querySelector(".look");
     if (!look || svg.classList.contains("thinking")) continue;
     const r = svg.getBoundingClientRect();
-    if (!r.width || r.bottom < 0 || r.top > innerHeight) continue;
-    const dx = pointer.x - (r.left + r.width / 2), dy = pointer.y - (r.top + r.height * 0.55);
+    if (!r.width) continue;
+    const dx = target.x - (r.left + r.width / 2), dy = target.y - (r.top + r.height * 0.55);
     const d = Math.hypot(dx, dy) || 1, k = Math.min(1, d / 160) * 3.6;
     look.style.transform = `translate(${(dx / d) * k}px, ${(dy / d) * k}px)`;
   }
@@ -54,9 +59,14 @@ function updateLooks() {
 if (!reduceMotion) {
   addEventListener("pointermove", (e) => {
     if (e.pointerType !== "mouse") return;
-    pointer = { x: e.clientX, y: e.clientY };
-    if (!lookQueued) { lookQueued = true; requestAnimationFrame(updateLooks); }
+    pointer = { x: e.clientX, y: e.clientY }; lastMove = Date.now();
+    if (!lookQueued) { lookQueued = true; requestAnimationFrame(() => { lookQueued = false; lookAt(pointer); }); }
   }, { passive: true });
+  // idle eyes: when the mouse rests, everyone glances around on their own
+  setInterval(() => {
+    if (Date.now() - lastMove < 3500 || document.hidden) return;
+    lookAt({ x: Math.random() * innerWidth, y: Math.random() * innerHeight });
+  }, 2200);
 }
 
 /* ---------- confetti, embers and smoke ---------- */
@@ -79,9 +89,10 @@ function burst(kind, fromEl) {
   const parts = Array.from({ length: n }, () => {
     const a = rnd(0, Math.PI * 2), v = kind === "confetti" ? rnd(3, 9) : kind === "embers" ? rnd(1, 4) : rnd(.4, 1.2);
     return {
-      x: ox + (kind === "embers" ? rnd(-80, 80) : rnd(-20, 20)), y: oy + rnd(-10, 20), vx: Math.cos(a) * v, vy: kind === "confetti" ? Math.sin(a) * v - 4 : kind === "embers" ? -rnd(1.5, 6) : -rnd(.6, 1.6),
+      x: ox + (kind === "embers" ? rnd(-80, 80) : rnd(-20, 20)), y: oy + rnd(-10, 20), vx: Math.cos(a) * v,
+      vy: kind === "confetti" ? Math.sin(a) * v - 4 : kind === "embers" ? -rnd(1.5, 6) : -rnd(.6, 1.6),
       s: kind === "confetti" ? rnd(7, 13) : kind === "embers" ? rnd(2.5, 5.5) : rnd(12, 20),
-      r: rnd(0, 6), vr: rnd(-.25, .25), c: palette[Math.floor(Math.random() * palette.length)], w: rnd(0, 6),
+      r: rnd(0, 6), vr: rnd(-.25, .25), c: pick(palette), w: rnd(0, 6),
     };
   });
   const t0 = performance.now(), dur = kind === "smoke" ? 1400 : 1900;
@@ -125,7 +136,7 @@ function countChanges(text) {
     } else if (line.startsWith("+")) added++;
     else if (line.startsWith("-")) removed++;
   }
-  return { files: files.size, added, removed };
+  return { files: files.size || 1, added, removed };
 }
 
 function renderEditor() {
@@ -134,10 +145,9 @@ function renderEditor() {
   syncScroll();
   if (!text.trim()) { els.stats.textContent = "Nothing pasted yet"; els.clear.hidden = true; return; }
   const { files, added, removed } = countChanges(text);
-  const f = files || 1;
   const max = state.config ? state.config.max_diff_chars : 20000;
   const tooBig = text.length > max ? ` · <span class="warn">only the first ${max.toLocaleString()} characters get reviewed</span>` : "";
-  els.stats.innerHTML = `<b>${f}</b> file${f === 1 ? "" : "s"} · <b class="a">${added}</b> added · <b class="d">${removed}</b> removed${tooBig}`;
+  els.stats.innerHTML = `<b>${files}</b> file${files === 1 ? "" : "s"} · <b class="a">${added}</b> added · <b class="d">${removed}</b> removed${tooBig}`;
   els.clear.hidden = false;
 }
 
@@ -147,10 +157,16 @@ function syncScroll() {
   pre.scrollLeft = els.diff.scrollLeft;
 }
 
+function onDiffChanged() {
+  renderEditor(); markSample();
+  clearTimeout(state.reactTimer);
+  state.reactTimer = setTimeout(() => { if (state.view === "idle") say(stageLine(), true); }, 350);
+}
+
 function setDiff(text) {
   els.diff.value = text;
   els.diff.scrollTop = 0; els.diff.scrollLeft = 0;
-  renderEditor(); markSample();
+  onDiffChanged();
 }
 
 function markSample() {
@@ -161,7 +177,7 @@ function markSample() {
   });
 }
 
-els.diff.addEventListener("input", () => { renderEditor(); markSample(); });
+els.diff.addEventListener("input", onDiffChanged);
 els.diff.addEventListener("scroll", syncScroll);
 els.clear.addEventListener("click", () => { setDiff(""); els.diff.focus(); });
 
@@ -176,95 +192,136 @@ els.editor.addEventListener("drop", async (e) => {
   toast(`Loaded ${file.name}`);
 });
 
-/* ---------- 2. examples + reviewers ---------- */
+/* ---------- 2. examples + the one reviewer picker ---------- */
 function buildSamples() {
   for (const s of state.config.samples) {
     const b = document.createElement("button");
     b.type = "button"; b.className = "chip"; b.dataset.id = s.id;
     b.setAttribute("aria-pressed", "false");
-    b.innerHTML = `${icon(s.icon, 17)}${esc(s.label)}`;
+    b.innerHTML = `${icon(s.icon, 16)}${esc(s.label)}`;
     b.addEventListener("click", () => setDiff(s.diff));
     els.samples.appendChild(b);
   }
 }
 
-function buildPersonas() {
-  els.personas.innerHTML = state.config.personas.map((p) => `
-    <div class="persona" style="--c:${p.color}">
-      <input type="radio" name="persona" id="p-${p.id}" value="${p.id}" ${p.id === state.persona ? "checked" : ""}>
-      <label for="p-${p.id}" title="${esc(p.name)}">
-        ${face(p.id, p.color, { size: 60 })}
-        <span class="name">${esc(p.short)}</span>
-        <span class="vibe">${esc(p.vibe)}</span>
-      </label>
-    </div>`).join("");
-  els.personas.addEventListener("change", (e) => pickPersona(e.target.value));
-
-  els.parade.innerHTML = state.config.personas.map((p, i) => `
-    <button type="button" data-id="${p.id}" aria-pressed="false" aria-label="Pick ${esc(p.short)}" title="${esc(p.short)}" style="--d:${(i * 0.35).toFixed(2)}s">
-      ${face(p.id, p.color, { size: 76 })}
+function buildReviewers() {
+  els.reviewers.innerHTML = state.config.personas.map((p) => `
+    <button class="rv" type="button" role="radio" aria-checked="false" data-id="${p.id}" aria-label="${esc(p.name)}">
+      ${face(p.id, p.color, { size: 62 })}
     </button>`).join("");
-  els.parade.addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-id]");
-    if (!b) return;
-    pickPersona(b.dataset.id);
-    const f = b.querySelector(".face");
-    f.classList.remove("pop"); void f.offsetWidth; f.classList.add("pop");
+  els.reviewers.addEventListener("click", (e) => {
+    const b = e.target.closest(".rv");
+    if (b) pickPersona(b.dataset.id, true);
+  });
+  // hovering a face previews who they are in the caption
+  els.reviewers.addEventListener("mouseover", (e) => { const b = e.target.closest(".rv"); if (b) caption(b.dataset.id); });
+  els.reviewers.addEventListener("mouseleave", () => caption(state.persona));
+  // arrow keys move between reviewers, like any radio group
+  els.reviewers.addEventListener("keydown", (e) => {
+    const ids = state.config.personas.map((p) => p.id), i = ids.indexOf(state.persona);
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const next = ids[(i + step + ids.length) % ids.length];
+    pickPersona(next, true);
+    $(`.rv[data-id="${next}"]`, els.reviewers).focus();
   });
 }
 
-function pickPersona(id) {
+function caption(id) {
+  const p = persona(id);
+  els.caption.innerHTML = `<b>${esc(p.short)}</b> · ${esc(p.vibe)}`;
+}
+
+function setButtonLabel() {
+  els.roastLabel.textContent = state.busy ? "Roasting" : state.last && state.last.persona !== state.persona ? `Ask ${persona().short}` : state.last ? "Roast again" : "Roast it";
+}
+
+function pickPersona(id, byUser = false) {
+  const changed = id !== state.persona;
   state.persona = id;
   document.documentElement.style.setProperty("--persona", persona().color);
   store.set("cr-persona", id);
-  const radio = $(`#p-${id}`);
-  if (radio && !radio.checked) radio.checked = true;
-  $$("button", els.parade).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === id)));
-  if (!state.busy && !state.last) showIdle(true);
+  $$(".rv", els.reviewers).forEach((b) => {
+    const on = b.dataset.id === id;
+    b.setAttribute("aria-checked", String(on));
+    b.tabIndex = on ? 0 : -1;
+  });
+  caption(id);
+  setButtonLabel();
+  if (byUser) restart($(`.rv[data-id="${id}"] .face`, els.reviewers), "pop");
+  if (state.view === "idle" && (changed || !byUser)) showIdle(byUser);
 }
 
-/* ---------- 3. verdict states ---------- */
-function showIdle(swap = false) {
+/* ---------- 3. the stage ---------- */
+function stageLine() {
+  const p = persona(), text = els.diff.value;
+  if (!text.trim()) return p.greeting;
+  const { files, added, removed } = countChanges(text);
+  return p.react.replace("{added}", added).replace("{removed}", removed).replace("{files}", files);
+}
+
+function say(text, animate) {
+  const bubble = $("#say");
+  if (!bubble || bubble.textContent === text) return;
+  bubble.textContent = text;
+  if (animate) restart(bubble, "swap");
+}
+
+function showIdle(enter = false) {
+  state.view = "idle";
   const p = persona();
   els.verdict.innerHTML = `
-    <div class="stage"><div class="host idle">
-      ${faceOf(p.id, { size: 128 })}
-      <p class="say ${swap ? "swap" : ""}">${esc(p.greeting)}</p>
+    <div class="host idle">
+      <button class="actor ${enter ? "enter" : ""}" id="actor" type="button" aria-label="Poke ${esc(p.short)}" title="Poke me">${faceOf(p.id, { size: 180 })}</button>
+      <p class="say" id="say">${esc(stageLine())}</p>
       <div class="ghost" aria-hidden="true">AWAITING DIFF</div>
-      <p class="hint">Pick an example or paste a diff, then press <b>Roast it</b>.</p>
-    </div></div>`;
-  updateLooks();
+      <p class="hint">Pick an example or paste a diff, then press <b>Roast it</b>. Psst: you can poke me.</p>
+    </div>`;
+  $("#actor").addEventListener("click", poke);
+  if (pointer) lookAt(pointer);
+}
+
+// poke the reviewer and they answer back
+function poke() {
+  const actor = $("#actor"), f = actor.querySelector(".face"), p = persona();
+  restart(actor, "poked");
+  setMood(f, "shocked");
+  say(p.pokes[state.pokeCount++ % p.pokes.length], true);
+  clearTimeout(poke.t);
+  poke.t = setTimeout(() => { setMood(f); say(stageLine(), true); }, 2200);
 }
 
 function showThinking() {
+  state.view = "thinking";
   const p = persona();
   els.verdict.innerHTML = `
-    <div class="stage"><div class="host thinking">
-      ${faceOf(p.id, { size: 128, cls: "thinking", mood: "flat" })}
-      <p class="say" id="loadingLine"><span>${esc(p.loading[0])}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
+    <div class="host thinking">
+      <div class="actor">${faceOf(p.id, { size: 180, cls: "thinking", mood: "flat" })}</div>
+      <p class="say" id="say"><span>${esc(p.loading[0])}</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></p>
       <div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
-    </div></div>`;
+    </div>`;
   let i = 0;
   clearInterval(state.loadingTimer);
   state.loadingTimer = setInterval(() => {
-    const line = $("#loadingLine");
-    if (!line) return clearInterval(state.loadingTimer);
+    const line = $("#say");
+    if (!line || state.view !== "thinking") return clearInterval(state.loadingTimer);
     i = (i + 1) % p.loading.length;
-    line.classList.remove("swap"); void line.offsetWidth; line.classList.add("swap");
+    restart(line, "swap");
     line.firstElementChild.textContent = p.loading[i];
   }, 1500);
 }
 
 function showError(title, message, withSettings) {
+  state.view = "error";
   els.verdict.innerHTML = `
     <div class="oops">
-      ${faceOf(state.persona, { size: 104, mood: "grimace" })}
+      ${faceOf(state.persona, { size: 120, mood: "grimace" })}
       <h3>${esc(title)}</h3>
       <p>${esc(message)}</p>
       ${withSettings ? `<button class="chip" id="errSettings" type="button">${icon("sliders", 17)}Open settings</button>` : ""}
     </div>`;
   if (withSettings) $("#errSettings").addEventListener("click", openSettings);
-  updateLooks();
 }
 
 function verdictWord(score) {
@@ -275,76 +332,72 @@ function verdictWord(score) {
 }
 
 async function showResult(res) {
+  state.view = "result";
   clearInterval(state.loadingTimer);
-  const p = persona(res.persona);
-  const r = res.report;
-  const v = verdictWord(r.risk_score);
-  const others = state.config.personas.filter((x) => x.id !== p.id);
+  const p = persona(res.persona), r = res.report, v = verdictWord(r.risk_score);
 
   els.verdict.innerHTML = `
     <div class="result" id="result">
       <button class="stamp ${v.cls}" id="stamp" type="button" aria-label="Risk ${r.risk_score} out of 10: ${v.word.toLowerCase()}. Click to stamp again.">
         <b>${r.risk_score}<small>/10</small></b><span>${v.word}</span>
       </button>
-      <div class="who">
-        ${face(p.id, p.color, { size: 68, mood: "talk" })}
-        <div><small>Reviewed by</small><strong><span class="full-name">${esc(p.name)}</span><span class="short-name">${esc(p.short)}</span></strong></div>
+      <div class="r-head">
+        ${face(p.id, p.color, { size: 72, mood: "talk" })}
+        <div>
+          <small>Reviewed by${res.demo ? `<span class="badge">Demo</span>` : ""}</small>
+          <strong><span class="full-name">${esc(p.name)}</span><span class="short-name">${esc(p.short)}</span></strong>
+        </div>
       </div>
       <p class="roast" id="roastText" title="Click to skip"><span class="sr">${esc(r.roast)}</span></p>
 
-      <div class="block">
-        <h3>Risk <span class="tag" style="background:${v.bg}">${v.tag}</span></h3>
-        <div class="meter" id="meter" aria-hidden="true">${"<i></i>".repeat(10)}</div>
+      <div class="r-body">
+        <div class="r-col">
+          <div class="block">
+            <h3>Risk <span class="tag" style="background:${v.bg}">${v.tag}</span></h3>
+            <div class="meter" id="meter" aria-hidden="true">${"<i></i>".repeat(10)}</div>
+          </div>
+          <div class="block">
+            <h3>What actually changed</h3>
+            <p class="summary">${esc(r.summary)}</p>
+          </div>
+        </div>
+        <div class="r-col block">
+          <h3>Fix these</h3>
+          <ul class="fixes">${r.concerns.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+        </div>
       </div>
-      <div class="block">
-        <h3>What actually changed</h3>
-        <p class="summary">${esc(r.summary)}</p>
-      </div>
-      <div class="block">
-        <h3>Fix these</h3>
-        <ul class="fixes">${r.concerns.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
-      </div>
-      <div class="block">
-        <h3>Commit message</h3>
+
+      <div class="r-foot block">
         <div class="commit">
-          <code id="commitMsg">${esc(r.conventional_commit)}</code>
+          <span class="label">Commit</span>
+          <code id="commitMsg" title="${esc(r.conventional_commit)}">${esc(r.conventional_commit)}</code>
           <button class="chip" id="copyBtn" type="button">${icon("copy", 16)}<span>Copy</span></button>
         </div>
+        <button class="chip" id="dlBtn" type="button" title="Download the review as a file">${icon("download", 18)}Save</button>
       </div>
-      <div class="block again">
-        <div class="again-who">
-          <span>Second opinion?</span>
-          <div class="minis">${others.map((o) => `<button class="mini" type="button" data-id="${o.id}" title="Roast again as ${esc(o.short)}" aria-label="Roast again as ${esc(o.short)}">${face(o.id, o.color, { size: 44 })}</button>`).join("")}</div>
-        </div>
-        <button class="chip" id="dlBtn" type="button">${icon("download", 16)}Download review</button>
-      </div>
-      <p class="block note">${res.demo ? `<span class="badge">Demo</span>Pre-written review: no API key is set up.` : `Reviewed by ${esc(res.model)}${res.truncated ? ". Large diff: first 20,000 characters only." : ""}`}</p>
     </div>`;
 
-  const result = $("#result"), stamp = $("#stamp"), who = $(".who .face");
-  updateLooks();
+  const result = $("#result"), stamp = $("#stamp"), who = $(".r-head .face");
+  if (pointer) lookAt(pointer);
 
-  // the big moment: the stamp slams, the card shudders, the effect fires, the reviewer talks
+  // the big moment: the stamp slams, the card shudders, the effect fires, the reviewers react
   setTimeout(() => { result.classList.add("shake"); burst(v.fx, stamp); audience(v.mood); }, reduceMotion ? 0 : 280);
-  stamp.addEventListener("click", () => {
-    stamp.classList.remove("again-slam"); void stamp.offsetWidth; stamp.classList.add("again-slam");
-    burst(v.fx, stamp);
-  });
+  stamp.addEventListener("click", () => { restart(stamp, "again-slam"); burst(v.fx, stamp); });
+  who.addEventListener("click", () => { restart(who, "pop"); toast(pick(p.pokes)); });
   $("#copyBtn").addEventListener("click", copyCommit);
   $("#dlBtn").addEventListener("click", download);
-  $$(".mini", result).forEach((b) => b.addEventListener("click", () => { pickPersona(b.dataset.id); roast(); }));
 
   await typeRoast($("#roastText"), r.roast);
   setMood(who, v.mood);
-  who.classList.add("pop");
+  restart(who, "pop");
   for (const b of $$(".block", result)) { b.classList.add("in"); await wait(90); }
   fillMeter(r.risk_score, v.fill);
 }
 
-// the six faces by the headline react to every verdict, then settle back
+// the reviewer row reacts to every verdict like an audience, then settles back
 function audience(mood) {
-  const faces = $$(".face", els.parade);
-  faces.forEach((f, i) => setTimeout(() => { setMood(f, mood); f.classList.remove("pop"); void f.offsetWidth; f.classList.add("pop"); }, i * 70));
+  const faces = $$(".rv .face", els.reviewers);
+  faces.forEach((f, i) => setTimeout(() => { setMood(f, mood); restart(f, "pop"); }, i * 70));
   clearTimeout(audience.t);
   audience.t = setTimeout(() => faces.forEach((f) => setMood(f)), 2600);
 }
@@ -359,10 +412,7 @@ function typeRoast(el, text) {
     let i = 0, done = false;
     const finish = () => {
       if (done) return;
-      done = true;
-      out.textContent = text;
-      caret.remove();
-      resolve();
+      done = true; out.textContent = text; caret.remove(); resolve();
     };
     el.addEventListener("click", finish, { once: true });
     if (reduceMotion) return finish();
@@ -401,9 +451,9 @@ async function roast() {
 
   state.busy = true;
   els.roast.disabled = true;
-  $(".roast-label", els.roast).textContent = "Roasting";
+  setButtonLabel();
   showThinking();
-  if (matchMedia("(max-width: 960px)").matches) els.verdict.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  if (matchMedia("(max-width: 980px), (max-height: 640px)").matches) els.verdict.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
 
   const started = Date.now();
   try {
@@ -424,13 +474,15 @@ async function roast() {
     const left = resp.headers.get("X-Roasts-Left");
     if (left !== null) state.config.roasts_left = Number(left);
     state.last = data;
+    state.busy = false;
+    setButtonLabel();
     await showResult(data);
   } catch {
     showError("Can't reach the server", "Check your internet connection, or make sure the app is still running, then try again.", false);
   } finally {
     state.busy = false;
     els.roast.disabled = false;
-    $(".roast-label", els.roast).textContent = "Roast it";
+    setButtonLabel();
   }
 }
 
@@ -460,7 +512,7 @@ function download() {
   a.download = "commitroast-review.md";
   a.click();
   URL.revokeObjectURL(a.href);
-  toast("Review downloaded");
+  toast("Review saved");
 }
 
 /* ---------- 5. settings ---------- */
@@ -497,9 +549,8 @@ els.settings.addEventListener("click", (e) => { if (e.target === els.settings) e
   const savedPersona = store.get("cr-persona");
   if (savedPersona && state.config.personas.some((p) => p.id === savedPersona)) state.persona = savedPersona;
   buildSamples();
-  buildPersonas();
+  buildReviewers();
   pickPersona(state.persona);
   renderEditor();
   renderKeyStatus();
-  showIdle();
 })();

@@ -10,33 +10,27 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="wrap">
+  <div class="app">
     <header class="top">
-      <a class="logo" href="/" aria-label="CommitRoast home">
-        <span class="logo-flame" id="logoFlame"></span>
-        <span class="logo-word">Commit<span class="roast-word">Roast</span></span>
-      </a>
+      <div class="brand">
+        <a class="logo" href="/" aria-label="CommitRoast home">
+          <span class="logo-flame" id="logoFlame"></span>
+          <span class="logo-word">Commit<span class="roast-word">Roast</span></span>
+        </a>
+        <p class="tagline">Paste a diff. Get roasted. Leave with a real review.</p>
+      </div>
       <button class="chip" id="settingsBtn" type="button">
         <span class="dot" id="keyDot" aria-hidden="true"></span>Settings
       </button>
     </header>
 
-    <section class="intro">
-      <div class="intro-text">
-        <h1>Paste a diff.<br>Get roasted.</h1>
-        <p>A reviewer with a personality problem reads your git diff, then hands you a risk score, the real problems and a clean commit message.</p>
-      </div>
-      <div class="parade" id="parade" role="group" aria-label="Pick a reviewer"></div>
-    </section>
-
     <main class="board">
-      <!-- LEFT: input -->
+      <!-- LEFT: what you give it -->
       <section class="card input-card" aria-labelledby="step1">
         <div class="step">
           <span class="num" aria-hidden="true">1</span>
           <h2 id="step1">Paste your diff</h2>
         </div>
-
         <div class="samples" id="samples" role="group" aria-label="Try an example"></div>
 
         <div class="editor" id="editor">
@@ -54,16 +48,17 @@
           <span class="num" aria-hidden="true">2</span>
           <h2 id="step2">Pick your reviewer</h2>
         </div>
-        <div class="personas" id="personas" role="radiogroup" aria-labelledby="step2"></div>
+        <div class="reviewers" id="reviewers" role="radiogroup" aria-labelledby="step2"></div>
+        <p class="rv-caption" id="rvCaption" aria-live="polite"></p>
 
         <button class="roast-btn" id="roastBtn" type="button">
-          <span class="roast-label">Roast it</span>
+          <span class="roast-label" id="roastLabel">Roast it</span>
           <span class="roast-flame" id="btnFlame"></span>
           <kbd id="kbdHint">Ctrl ↵</kbd>
         </button>
       </section>
 
-      <!-- RIGHT: verdict -->
+      <!-- RIGHT: the reviewer's stage -->
       <section class="card verdict-card" id="verdict" aria-live="polite" aria-label="Verdict"></section>
     </main>
 

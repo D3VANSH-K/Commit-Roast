@@ -40,6 +40,8 @@ PERSONAS = {
         "vibe": "Polite. Devastating.",
         "greeting": "Per my last review, I'm ready when you are.",
         "loading": ["Adjusting monocle…", "Drafting a polite little comment…", "Just curious about line 12…"],
+        "react": "Interesting. {added} lines added, {removed} removed. Just curious, shall we begin?",
+        "pokes": ["Please don't touch the monocle.", "Per my last poke: stop.", "I'll be adding this to your review."],
         "style": "Polite on the surface, devastating underneath. Uses 'per my last review', 'just curious', and 'interesting choice'.",
     },
     "pirate": {
@@ -49,6 +51,8 @@ PERSONAS = {
         "vibe": "Threatens the plank.",
         "greeting": "Arr, hand over yer diff, landlubber.",
         "loading": ["Unrolling the treasure map…", "Sharpening the cutlass…", "Searching for scurvy…"],
+        "react": "Arr, {added} lines aboard and {removed} thrown overboard. Hit Roast if ye dare.",
+        "pokes": ["Oi! Paws off the hat!", "Arr, that tickles.", "One more poke and it's the plank."],
         "style": "Speaks in pirate dialect, compares bugs to scurvy and bad code to mutiny. Threatens the plank.",
     },
     "chef": {
@@ -58,6 +62,8 @@ PERSONAS = {
         "vibe": "Your code is RAW.",
         "greeting": "Right! Show me what you've cooked.",
         "loading": ["Tasting the sauce…", "Checking if it's raw…", "Heating up the pan…"],
+        "react": "{added} new ingredients? Right. Let me taste it. Press Roast!",
+        "pokes": ["DON'T touch the hat!", "Hands washed? Didn't think so.", "Back to your station!"],
         "style": "A hot-tempered TV chef in a busy kitchen. Calls the code raw, undercooked, a disgrace to the kitchen. Loud, dramatic, food metaphors.",
     },
     "sre": {
@@ -67,6 +73,8 @@ PERSONAS = {
         "vibe": "Knows what pages next.",
         "greeting": "Fourth page tonight. Let's get this over with.",
         "loading": ["Refilling coffee…", "Silencing the pager…", "Predicting the outage…"],
+        "react": "{added} added, {removed} removed. I can already hear the pager.",
+        "pokes": ["Five more minutes...", "Was that the pager?", "Please. I'm so tired."],
         "style": "Sleep-deprived, has been paged four times tonight, knows exactly which line will page them next.",
     },
     "genz": {
@@ -76,6 +84,8 @@ PERSONAS = {
         "vibe": "It's giving bugs.",
         "greeting": "ok drop the diff, i'm ready to judge fr",
         "loading": ["Checking the vibes…", "Lowkey reading every line…", "Typing 'no cap'…"],
+        "react": "ok {added} lines added. this could be giving... something. hit roast",
+        "pokes": ["rude", "ok that was kinda funny", "poke me again and you're getting a bad review"],
         "style": "Says 'no cap', 'it's giving', 'lowkey', 'this ain't it'. Brutal but in a chill way.",
     },
     "auditor": {
@@ -85,6 +95,8 @@ PERSONAS = {
         "vibe": "Trusts no input.",
         "greeting": "Paste it. I assume it's already compromised.",
         "loading": ["Building a threat model…", "Assuming the worst…", "Hunting for injections…"],
+        "react": "{added} new lines. Every one of them is a potential attack surface.",
+        "pokes": ["Unauthorised access detected.", "This interaction has been logged.", "Identify yourself."],
         "style": "Sees an attacker behind every line. Treats every input as hostile. Mentions threat models constantly.",
     },
 }

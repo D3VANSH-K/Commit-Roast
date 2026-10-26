@@ -10,20 +10,39 @@ On Vercel:     found automatically (it looks for a FastAPI object called `app` i
 """
 
 import hashlib
+import html
 import os
+import sys
 import time
 from collections import defaultdict, deque
 from typing import Optional
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from core import MAX_DIFF_CHARS, PERSONAS, CommitRoastError, analyze_diff, find_persona
-from samples import SAMPLES, demo_report, match_sample
+HERE = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(HERE, "static")
+REQUIRED_FILES = ["core.py", "samples.py", "static/index.html", "static/style.css", "static/app.js", "static/art.js"]
 
-load_dotenv()  # reads GEMINI_API_KEY from a local .env file, if there is one
+# If a file is missing from the upload, don't crash: remember why, and explain it on the page instead.
+try:
+    from core import MAX_DIFF_CHARS, PERSONAS, CommitRoastError, analyze_diff, find_persona
+    from samples import SAMPLES, demo_report, match_sample
+    STARTUP_ERROR = None
+except Exception as e:  # e.g. core.py or samples.py not uploaded, or a library missing
+    STARTUP_ERROR = f"{type(e).__name__}: {e}"
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # reads GEMINI_API_KEY from a local .env file, if there is one (not needed on Vercel)
+except ImportError:
+    pass
+
+
+def missing_files() -> list:
+    return [f for f in REQUIRED_FILES if not os.path.exists(os.path.join(HERE, f))]
 
 ROASTS_PER_HOUR = 20       # per visitor, when they use the site's own key
 CACHE_SECONDS = 60 * 60    # same diff + same reviewer within an hour = free repeat
@@ -68,9 +87,27 @@ def roasts_left(ip: str) -> int:
 
 
 # ---------- API ----------
+def check_startup():
+    if STARTUP_ERROR:
+        raise HTTPException(500, f"Server setup problem: {STARTUP_ERROR}. Missing files: {', '.join(missing_files()) or 'none'}")
+
+
+@app.get("/api/health")
+def health():
+    """Open /api/health on the live site to check the setup (never shows the key itself)."""
+    return {
+        "ok": STARTUP_ERROR is None and not missing_files(),
+        "startup_error": STARTUP_ERROR,
+        "missing_files": missing_files(),
+        "gemini_key_set": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+        "python": sys.version.split()[0],
+    }
+
+
 @app.get("/api/config")
 def config(request: Request):
     """Everything the page needs to draw itself: reviewers, examples, and whether a key is set up."""
+    check_startup()
     personas = [{"id": pid, **{k: v for k, v in p.items() if k != "style"}} for pid, p in PERSONAS.items()]
     samples = [{"id": sid, **s} for sid, s in SAMPLES.items()]
     return {
@@ -84,6 +121,7 @@ def config(request: Request):
 
 @app.post("/api/roast", response_model=RoastResponse)
 def roast(body: RoastRequest, request: Request, response: Response):
+    check_startup()
     persona = find_persona(body.persona)
     diff = body.diff.strip()
     own_key = (body.api_key or "").strip()
@@ -126,7 +164,19 @@ def roast(body: RoastRequest, request: Request, response: Response):
 # ---------- the website itself (must come AFTER the API routes) ----------
 # (On Vercel these files are copied to its fast CDN automatically. The folder is called "static",
 #  not "public", because Vercel reserves "public" for its own use.)
-app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static"), html=True), name="site")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="site")
+else:
+    @app.get("/", response_class=HTMLResponse)
+    def setup_problem():
+        items = "".join(f"<li><code>{html.escape(f)}</code></li>" for f in missing_files())
+        err = f"<p>Error: <code>{html.escape(STARTUP_ERROR)}</code></p>" if STARTUP_ERROR else ""
+        return f"""<!doctype html><meta charset="utf-8"><title>CommitRoast setup</title>
+<body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px;line-height:1.5">
+<h1>CommitRoast is almost live</h1>
+<p>The server is running, but these files are missing from the GitHub repository:</p><ul>{items}</ul>{err}
+<p>Upload them to the <b>top level</b> of the repository (next to <code>app.py</code>), keeping the
+<code>static</code> folder as a folder. Vercel redeploys automatically after you commit.</p></body>"""
 
 
 if __name__ == "__main__":
